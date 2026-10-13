@@ -196,7 +196,9 @@ class CompositionReconcilerTest {
 
         Await.until(() -> configMap("d-extra-1") == null && configMap("d-extra-2") == null, "the pruning");
         assertNotNull(configMap("d-extra-0"));
-        assertTrue(pruned.containsAll(List.of("ConfigMap/d-extra-1", "ConfigMap/d-extra-2")));
+        // the observer hears of a prune once the delete has returned: after the object may be seen gone
+        Await.until(() -> pruned.containsAll(List.of("ConfigMap/d-extra-1", "ConfigMap/d-extra-2")),
+                "the prunes observed");
 
         Await.until(() -> !configMap(dKeep).getMetadata().getLabels().containsKey(Labels.ownerUid(DOMAIN)),
                 "the orphan to be released");

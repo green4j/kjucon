@@ -223,9 +223,10 @@ configure([coreProject,
     test {
         useJUnitPlatform()
 
+        // A failure is shown with its full stack trace; what the tests print - the mock API server logs every
+        // request - stays in the report, so that a failure is not buried in the output of the passing tests.
         testLogging {
             events 'skipped', 'failed'
-            showStandardStreams = true
             exceptionFormat = 'full'
             afterSuite { desc, result ->
                 if (!desc.parent) {

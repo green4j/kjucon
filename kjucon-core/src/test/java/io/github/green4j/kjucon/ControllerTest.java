@@ -164,7 +164,8 @@ class ControllerTest {
         client.resources(Widget.class).inNamespace(NS).withName(widget).delete();
 
         Await.until(() -> widget(widget) == null, "the widget to be gone");
-        assertEquals(1, reconciler.cleanups.getOrDefault(widget, 0));
+        assertTrue(reconciler.cleanups.getOrDefault(widget, 0) >= 1,
+                "cleaned up - at least once: a pass on a cache still showing the finalizer may repeat it");
         assertNull(configMap(widget), "deleted by the cleanup");
     }
 
@@ -211,7 +212,8 @@ class ControllerTest {
 
         Await.until(() -> client.resources(Widget.class).inNamespace(ns).withName(s1).get() == null,
                 "the deselected widget to be gone");
-        assertEquals(1, selectedReconciler.cleanups.getOrDefault(s1, 0));
+        assertTrue(selectedReconciler.cleanups.getOrDefault(s1, 0) >= 1,
+                "cleaned up - at least once: a pass on a cache still showing the finalizer may repeat it");
         assertTrue(selected.health().isLive());
     }
 
@@ -256,7 +258,8 @@ class ControllerTest {
 
         Await.until(() -> client.resources(Widget.class).inNamespace(ns).withName(f2).get() == null,
                 "the widget to be gone");
-        assertEquals(1, formerReconciler.cleanups.getOrDefault(f2, 0));
+        assertTrue(formerReconciler.cleanups.getOrDefault(f2, 0) >= 1,
+                "cleaned up - at least once: a pass on a cache still showing the finalizer may repeat it");
     }
 
     @Test

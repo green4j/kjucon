@@ -1,0 +1,489 @@
+import io.github.green4j.kjucon.build.SonatypeCentralPortalUploadRepositoryTask
+
+/*
+ * Copyright (c) 2026 Anatoly Gudkov and others.
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ */
+
+plugins {
+    id 'com.github.johnrengelman.shadow' version '7.1.2' apply false
+}
+
+defaultTasks 'clean', 'build'
+
+def projectVersion = file('version.txt').text.trim()
+
+def getConfigProperty(final String propertyName) {
+    String value = project.findProperty(propertyName)
+    if (!value) {
+        value = System.getenv(propertyName)
+        if (!value) {
+            return null
+        }
+    }
+    return value.trim()
+}
+
+def addDependencyNode(depsNode, dep, scope) {
+    def node = depsNode.appendNode('dependency')
+    node.appendNode('groupId', dep.group)
+    node.appendNode('artifactId', dep.name)
+    node.appendNode('version', dep.version)
+    node.appendNode('scope', scope)
+    if (!dep.excludeRules.isEmpty()) {
+        def exclusions = node.appendNode('exclusions')
+        dep.excludeRules.each { rule ->
+            def exclusion = exclusions.appendNode('exclusion')
+            exclusion.appendNode('groupId', rule.group ?: '*')
+            exclusion.appendNode('artifactId', rule.module ?: '*')
+        }
+    }
+}
+
+def addDepsFromProjects(pom, projects) {
+    pom.withXml {
+        def depsNode = asNode().appendNode('dependencies')
+        def addedDeps = [] as Set
+
+        projects.each { proj ->
+            // api -> compile scope
+            proj.configurations.api.allDependencies.each { dep ->
+                if (dep instanceof ExternalModuleDependency
+                        && addedDeps.add("${dep.group}:${dep.name}")) {
+                    addDependencyNode(depsNode, dep, 'compile')
+                }
+            }
+
+            // implementation -> runtime scope
+            proj.configurations.implementation.allDependencies.each { dep ->
+                if (dep instanceof ExternalModuleDependency
+                        && addedDeps.add("${dep.group}:${dep.name}")) {
+                    addDependencyNode(depsNode, dep, 'runtime')
+                }
+            }
+        }
+    }
+}
+
+ext {
+    kjuconSrcJavaVersion = JavaVersion.toVersion(srcJavaVersion)
+
+    // Sources are pure ASCII, and are never decoded with whatever encoding the build machine
+    // happens to default to. javac reports any non-ASCII byte as an unmappable character. Write
+    // one in a literal as \\uXXXX, and in javadoc as its ASCII equivalent ("--").
+    kjuconSourceEncoding = 'US-ASCII'
+
+    isRelease = !projectVersion.endsWith('-SNAPSHOT')
+
+    sonatypeReleasesRepoUrl = isRelease
+            ? 'https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/'
+            : 'https://central.sonatype.com/repository/maven-snapshots/'
+
+    sonatypeUsername = getConfigProperty('SONATYPE_USERNAME')
+    sonatypePassword = getConfigProperty('SONATYPE_PASSWORD')
+
+    signingKey = getConfigProperty('SIGNING_GPG_SECRET_KEY')    // ascii-armored secret key
+    signingPassword = getConfigProperty('SIGNING_GPG_PASSWORD') // plain text
+}
+
+def projectPom = {
+    name = projectName
+    description = 'Minimalistic fabric8-based framework for Kubernetes controllers and hierarchical compositions.'
+    url = 'https://github.com/green4j/kjucon'
+
+    scm {
+        connection = 'scm:git:https://github.com/green4j/kjucon.git'
+        developerConnection = 'scm:git:https://github.com/green4j/kjucon.git'
+        url = 'https://github.com/green4j/kjucon.git'
+    }
+
+    licenses {
+        license {
+            name = 'MIT License'
+            url = 'https://opensource.org/licenses/MIT'
+        }
+    }
+
+    developers {
+        developer {
+            id = 'anatolygudkov'
+            name = 'Anatoly Gudkov'
+            email = 'gudkovanatoly@hotmail.com'
+            url = 'https://github.com/anatolygudkov'
+        }
+    }
+}
+
+// A working client: kubernetes-client-api is what kjucon compiles against, kubernetes-client is its implementation.
+// The implementation brings the Vert.x transport by default; the JDK one replaces it - no Vert.x, no Netty.
+def runnableClient = { configuration, deps ->
+    deps.add(configuration, "io.fabric8:kubernetes-client:${fabric8Version}") {
+        exclude group: 'io.fabric8', module: 'kubernetes-httpclient-vertx-5'
+    }
+    deps.add(configuration, "io.fabric8:kubernetes-httpclient-jdk:${fabric8Version}")
+}
+
+def coreProject = project(':kjucon-core')
+def composeProject = project(':kjucon-compose')
+def allProject = project(':kjucon-all')
+def exampleProject = project(':kjucon-example')
+
+subprojects {
+    apply plugin: 'java-library'
+
+    group = projectGroup
+    version = projectVersion
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+
+    java {
+        // every source set - main, test, testFixtures, intTest - and the variants published from them
+        sourceCompatibility = kjuconSrcJavaVersion
+        targetCompatibility = kjuconSrcJavaVersion
+
+        withSourcesJar()
+        withJavadocJar()
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.release = kjuconSrcJavaVersion.majorVersion as Integer
+        options.encoding = kjuconSourceEncoding
+    }
+
+    // Every module, kjucon-all included: its aggregated javadoc is what ships in the javadoc jar, so it
+    // needs the same encoding and doclint settings rather than javadoc's platform defaults.
+    javadoc {
+        failOnError false
+
+        title = "<h1>${projectName}</h1>"
+        options.bottom = "<i>Copyright &#169; ${projectCopyright}. All Rights Reserved.</i>"
+        options.encoding = 'UTF-8'
+        options.docEncoding = 'UTF-8'
+        options.charSet = 'UTF-8'
+        options.addBooleanOption 'html5', true
+        options.addStringOption('Xdoclint:all,-missing', '-quiet')
+    }
+
+    jar {
+        manifest {
+            attributes 'Implementation-Title': projectName,
+                    'Implementation-Version': projectVersion,
+                    'Implementation-Vendor': projectAuthor
+        }
+        includeEmptyDirs = false
+    }
+
+    tasks.withType(Sign).configureEach {
+        onlyIf {
+            isRelease && gradle.taskGraph.hasTask(tasks.publish)
+        }
+    }
+}
+
+configure([coreProject,
+           composeProject,
+           exampleProject]) {
+    apply plugin: 'checkstyle'
+
+    dependencies {
+        testImplementation "org.junit.jupiter:junit-jupiter:${jupiterVersion}"
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+        // fabric8 and kjucon log through slf4j; without a binding their test output is invisible
+        testRuntimeOnly "org.slf4j:slf4j-simple:${slf4jSimpleVersion}"
+
+        checkstyle "com.puppycrawl.tools:checkstyle:${checkstyleVersion}"
+    }
+
+    compileJava {
+        sourceCompatibility = kjuconSrcJavaVersion
+        targetCompatibility = kjuconSrcJavaVersion
+
+        // --release rather than -source/-target alone: it also pins the API, and it keeps the
+        // "bootstrap class path not set" note -- which -Werror turns into a failure -- off newer JDKs.
+        options.release = kjuconSrcJavaVersion.majorVersion as Integer
+        options.compilerArgs.addAll(['-Xlint:all', '-Werror']) // enable all warnings and treat them as errors
+        options.encoding = kjuconSourceEncoding
+        options.deprecation = true
+    }
+
+    compileTestJava {
+        options.release = kjuconSrcJavaVersion.majorVersion as Integer
+        options.encoding = kjuconSourceEncoding
+    }
+
+    checkstyle {
+        toolVersion = "${checkstyleVersion}"
+    }
+
+    test {
+        useJUnitPlatform()
+
+        testLogging {
+            events 'skipped', 'failed'
+            showStandardStreams = true
+            exceptionFormat = 'full'
+            afterSuite { desc, result ->
+                if (!desc.parent) {
+                    println "Results: ${result.resultType} (${result.testCount} tests, " +
+                            "${result.successfulTestCount} successes, " +
+                            "${result.failedTestCount} failures, " +
+                            "${result.skippedTestCount} skipped)"
+                }
+            }
+        }
+    }
+}
+
+// Coverage is for the published libraries only. The example operator exists to be read and run - a coverage
+// figure over it would be a number nobody should act on.
+configure([coreProject,
+           composeProject]) {
+    apply plugin: 'maven-publish'
+    apply plugin: 'signing'
+    apply plugin: 'jacoco'
+
+    dependencies {
+        runnableClient('testRuntimeOnly', delegate)
+    }
+
+    check {
+        dependsOn jacocoTestReport
+    }
+
+    publishing {
+        publications {
+            maven(MavenPublication) {
+                from components.java
+                pom(projectPom)
+            }
+        }
+
+        repositories {
+            maven {
+                name = 'MavenCentral'
+                url(sonatypeReleasesRepoUrl)
+                credentials {
+                    username = sonatypeUsername
+                    password = sonatypePassword
+                }
+            }
+        }
+    }
+
+    signing {
+        if (signingKey) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        }
+        sign publishing.publications.maven
+    }
+}
+
+configure(coreProject) {
+    description = 'kjucon core - the reconcile loop: operator, controllers, work queue, informers, status'
+
+    // The mock API server the tests of core and compose run against. Shared as test fixtures, not published.
+    apply plugin: 'java-test-fixtures'
+
+    components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }
+    components.java.withVariantsFromConfiguration(configurations.testFixturesRuntimeElements) { skip() }
+
+    dependencies {
+        testFixturesApi "io.fabric8:kubernetes-server-mock:${fabric8Version}"
+        runnableClient('testFixturesImplementation', delegate)
+        testFixturesApi "org.junit.jupiter:junit-jupiter:${jupiterVersion}"
+
+        // The only dependency. kjucon never builds a client - it is given one - so the implementation
+        // (kubernetes-client) and its HTTP transport are the application's choice.
+        api "io.fabric8:kubernetes-client-api:${fabric8Version}"
+    }
+}
+
+configure(composeProject) {
+    description = 'kjucon compose - hierarchical compositions of components a primary resource owns'
+
+    dependencies {
+        api coreProject
+
+        testImplementation testFixtures(coreProject)
+    }
+}
+
+configure(allProject) {
+    description = 'kjucon core and compose in one jar, with the fabric8 client and its JDK HTTP transport'
+
+    apply plugin: 'maven-publish'
+    apply plugin: 'signing'
+    apply plugin: 'com.github.johnrengelman.shadow'
+
+    dependencies {
+        api coreProject
+        api composeProject
+
+        // A working client, so that kjucon-all is all an application needs.
+        runnableClient('implementation', delegate)
+    }
+
+    shadowJar {
+        archiveBaseName = jar.archiveBaseName
+        archiveAppendix = jar.archiveAppendix
+        archiveClassifier = ''
+        manifest.attributes(
+                'Implementation-Title': projectName,
+                'Implementation-Version': projectVersion,
+                'Implementation-Vendor': projectAuthor,
+                'Automatic-Module-Name': 'io.github.green4j.kjucon.all')
+
+        // the two kjucon modules only: fabric8 stays where it is, named by the POM
+        dependencies {
+            include(project(coreProject.path))
+            include(project(composeProject.path))
+        }
+    }
+
+    jar.finalizedBy shadowJar
+
+    sourcesJar {
+        from files(
+                coreProject.sourceSets.main.allSource,
+                composeProject.sourceSets.main.allSource)
+    }
+
+    javadoc {
+        source += coreProject.sourceSets.main.allJava
+        source += composeProject.sourceSets.main.allJava
+        classpath += coreProject.sourceSets.main.compileClasspath
+    }
+
+    publishing {
+        publications {
+            maven(MavenPublication) {
+                artifact shadowJar
+                artifact sourcesJar
+                artifact javadocJar
+                pom(projectPom)
+                addDepsFromProjects(pom, [coreProject, composeProject, allProject])
+            }
+        }
+
+        repositories {
+            maven {
+                name = 'MavenCentral'
+                url(sonatypeReleasesRepoUrl)
+                credentials {
+                    username = sonatypeUsername
+                    password = sonatypePassword
+                }
+            }
+        }
+    }
+
+    signing {
+        if (signingKey) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        }
+        sign publishing.publications.maven
+    }
+}
+
+configure(exampleProject) {
+    description = 'kjucon examples - not part of the framework'
+
+    apply plugin: 'application'
+
+    dependencies {
+        implementation composeProject
+        runnableClient('implementation', delegate)
+        runtimeOnly "org.slf4j:slf4j-simple:${slf4jSimpleVersion}"
+    }
+
+    application {
+        mainClass = 'io.github.green4j.kjucon.example.webapp.WebAppOperator'
+    }
+
+    // One task per example, from the plainest up; each takes --args='...'.
+    [runGreetings: 'greeting.GreetingOperator',
+     runMirror   : 'mirror.MirrorController',
+     runWebApps  : 'webapp.WebAppOperator'].each { name, main ->
+        tasks.register(name, JavaExec) {
+            group = 'application'
+            description = "Runs io.github.green4j.kjucon.example.${main} against the current kubeconfig context."
+            classpath = sourceSets.main.runtimeClasspath
+            mainClass = "io.github.green4j.kjucon.example.${main}"
+        }
+    }
+
+    // Nothing here is published, so the artifacts the library modules owe Maven Central are dead weight
+    // on every build.
+    [tasks.named('javadoc'), tasks.named('javadocJar'), tasks.named('sourcesJar')].each {
+        it.configure { enabled = false }
+    }
+
+    // What the unit tests cannot say: that the example operator really drives a cluster - server-side apply,
+    // owner references, garbage collection and finalizers as a real API server implements them. These run
+    // against k3s in a container, so they need a Docker daemon and are never part of 'build'.
+    sourceSets {
+        intTest {
+            compileClasspath += sourceSets.main.output
+            runtimeClasspath += sourceSets.main.output
+        }
+    }
+
+    configurations {
+        intTestImplementation.extendsFrom implementation, testImplementation
+        intTestRuntimeOnly.extendsFrom runtimeOnly, testRuntimeOnly
+    }
+
+    dependencies {
+        intTestImplementation "org.testcontainers:testcontainers-k3s:${testcontainersVersion}"
+        intTestImplementation testFixtures(coreProject)
+        intTestImplementation "org.junit.jupiter:junit-jupiter:${jupiterVersion}"
+        intTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+
+    compileIntTestJava {
+        options.release = kjuconSrcJavaVersion.majorVersion as Integer
+        options.encoding = kjuconSourceEncoding
+    }
+
+    tasks.register('intTest', Test) {
+        group = 'verification'
+        description = 'Runs the example operator against k3s. Needs a Docker daemon.'
+
+        testClassesDirs = sourceSets.intTest.output.classesDirs
+        classpath = sourceSets.intTest.runtimeClasspath
+
+        // -Pk3sImage=rancher/k3s:<tag> to run against another Kubernetes version
+        systemProperty 'kjucon.k3s.image', project.findProperty('k3sImage') ?: 'rancher/k3s:v1.36.5-k3s1'
+
+        useJUnitPlatform()
+
+        testLogging {
+            events 'skipped', 'failed'
+            showStandardStreams = true
+            exceptionFormat = 'full'
+        }
+
+        // Colima has no /var/run/docker.sock, so testcontainers cannot find the daemon on its own.
+        // A no-op wherever DOCKER_HOST is already set or the socket is absent.
+        def colimaSocket = file("${System.getProperty('user.home')}/.colima/default/docker.sock")
+        if (!System.getenv('DOCKER_HOST') && colimaSocket.exists()) {
+            environment 'DOCKER_HOST', "unix://${colimaSocket}"
+            environment 'TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE', '/var/run/docker.sock'
+            // the reaper is unreachable through the virtual machine's port forwarding; every
+            // container here is stopped by the test which started it
+            environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+        }
+    }
+}
+
+tasks.register('uploadArtifactsToSonatypeCentralPortal', SonatypeCentralPortalUploadRepositoryTask) {
+    portalUsername.set(sonatypeUsername)
+    portalPassword.set(sonatypePassword)
+    groupId.set(projectGroup)
+    snapshotRelease.set(!isRelease)
+}

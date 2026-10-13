@@ -1,0 +1,13 @@
+apiVersion: example.kjucon.green4j.github.io/v1
+kind: WebAppSet
+metadata:
+  name: shop
+  labels:
+    team: blue
+spec:
+  apps:
+    - name: front
+      message: Welcome to the shop
+      replicas: 2
+    - name: admin
+      message: Back office

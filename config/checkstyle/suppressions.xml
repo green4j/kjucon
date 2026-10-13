@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!DOCTYPE suppressions PUBLIC
+        "-//Checkstyle//DTD SuppressionFilter Configuration 1.2//EN"
+        "https://checkstyle.org/dtds/suppressions_1_2.dtd">
+<suppressions>
+    <!-- logging and printing are banned from the main code of the libraries only -->
+    <suppress id="noLogging" files="[\\/]kjucon-example[\\/]"/>
+    <suppress id="noConsole" files="[\\/]kjucon-example[\\/]"/>
+    <suppress id="noLogging" files="[\\/]src[\\/](test|testFixtures|intTest)[\\/]"/>
+    <suppress id="noConsole" files="[\\/]src[\\/](test|testFixtures|intTest)[\\/]"/>
+    <!-- the default error handler prints to the standard error by design -->
+    <suppress id="noConsole" files="[\\/]StdErrErrorHandler\.java$"/>
+</suppressions>

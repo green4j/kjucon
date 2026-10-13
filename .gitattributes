@@ -1,0 +1,4 @@
+# Line endings the scripts need on their platforms, whatever core.autocrlf says
+/gradlew        text eol=lf
+*.bat           text eol=crlf
+*.jar           binary

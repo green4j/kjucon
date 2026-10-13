@@ -1,0 +1,8 @@
+rootProject.name = projectName
+
+include(
+        'kjucon-core',
+        'kjucon-compose',
+        'kjucon-all',
+        'kjucon-example'
+)

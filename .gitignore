@@ -1,0 +1,10 @@
+.gradle/
+
+# build output of the root and of each module - anchored, so that a source package named build is not caught
+/build/
+/*/build/
+/out/
+/*/out/
+.nb-gradle/
+
+.idea

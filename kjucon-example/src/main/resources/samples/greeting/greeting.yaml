@@ -1,0 +1,6 @@
+apiVersion: example.kjucon.green4j.github.io/v1
+kind: Greeting
+metadata:
+  name: world
+spec:
+  to: World
